@@ -258,12 +258,13 @@ class InferEngine(BaseInferEngine, ProcessorMixin):
 
     @staticmethod
     def safe_asyncio_run(coro):
-        loop = asyncio.get_event_loop()
+        # loop = asyncio.get_event_loop()
 
-        def asyncio_run(core):
-            return loop.run_until_complete(core)
+        # def asyncio_run(core):
+        #     return loop.run_until_complete(core)
 
-        return InferEngine.thread_run(asyncio_run, args=(coro, ))
+        # return InferEngine.thread_run(asyncio_run, args=(coro, ))
+        return InferEngine.thread_run(asyncio.run, args=(coro, ))
 
     @staticmethod
     def _batch_encode(infer_requests: List[InferRequest], template: Template, strict: bool):
