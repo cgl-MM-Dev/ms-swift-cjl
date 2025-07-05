@@ -1,6 +1,8 @@
 import asyncio
+import os
 import re
 import textwrap
+from collections import Counter
 from copy import deepcopy
 from typing import Dict, List, Optional
 
@@ -10,22 +12,24 @@ import torch
 from swift.llm import PtEngine, RequestConfig, Template, to_device
 from swift.llm.infer.protocol import ChatCompletionResponse
 from swift.plugin import ORM, orms, rm_plugins
+from swift.plugin.multi_turn import MultiTurnScheduler, multi_turns
 from swift.plugin.rm_plugin import DefaultRMPlugin
 from swift.utils import get_logger
 
 logger = get_logger()
 """
-Step 1: Define a Reward Class
-    Implement your custom reward calculation logic within the __call__ method.
-    The method accepts the model's output completions and dataset columns (passed as kwargs) as input parameters.
+TO CUSTOMIZE REWARD FUNCTION:
+    Step 1: Define a Reward Class
+        Implement your custom reward calculation logic within the __call__ method.
+        The method accepts the model's output completions and dataset columns (passed as kwargs) as input parameters.
 
-Step 2: Register the Reward Class in orms
-    For example:
-    python orms['external_math_acc'] = MathAccuracy
+    Step 2: Add your reward function to the orms registry:
+        orms['my_reward_function'] = MyRewardFunction
 
-Step 3: Configure the Arguments
-    Use the following arguments when running the script:
-    bash --plugin /path/to/plugin.py --reward_funcs external_math_acc
+    Step 3: Configure the Arguments
+        Run the script with:
+        --plugin /path/to/plugin.py \
+        --reward_funcs my_reward_function
 """
 
 
@@ -361,7 +365,6 @@ class CodeRewardByJudge0(ORM):
     PYTHON_ID = 71
 
     def __init__(self):
-        import os
         self.endpoint = os.getenv('JUDGE0_ENDPOINT')
         assert self.endpoint is not None, (
             'Judge0 endpoint is not set. Please set the JUDGE0_ENDPOINT environment variable.')
@@ -447,6 +450,249 @@ class CodeRewardByJudge0(ORM):
         return rewards
 
 
+# ref implementation: https://github.com/qiancheng0/ToolRL/blob/main/verl/utils/reward_score/rlla.py
+# arxiv paper: https://arxiv.org/abs/2504.13958
+# MAX1STEP30MAX3: enable Two stage reward Setting include Format and Correctness
+# SCHEDULEREWARD: enable Dynamic (Finegrained) reward Setting include Format and Correctness
+# Correctness Reward Granularity:
+# COARSEREWARD -> Coarse, INTERMEDIATEREWARD -> Intermediate, REFINEDREWARD -> Finegrained
+class ToolUseFormatReward(ORM):
+
+    def __init__(self):
+        self.format_max_possible = 1.0
+        self.format_min_possible = 0.0
+
+    def __call__(self, completions, solution, global_step, **kwargs) -> List[float]:
+        max_possible_reward = self.format_max_possible
+        min_possible_reward = self.format_min_possible
+        # Two stage (Coarse) Setting, divide training into two phases. Format Reward in [0,0.5] if step < 30 else [0,1]
+        if str(os.getenv('MAX1STEP30MAX3', 0)) == '1':
+            if global_step >= 30:
+                max_possible_reward = self.format_max_possible / 2
+                min_possible_reward = self.format_min_possible / 2
+            else:
+                max_possible_reward = self.format_max_possible
+                min_possible_reward = self.format_min_possible
+
+        # apply continuous interpolation between the two reward scales throughout training.
+        if str(os.getenv('SCHEDULEREWARD', 0)) == '1':
+            max_possible_reward = 2 - (2 - max_possible_reward) * global_step / 150
+            min_possible_reward = -2 + (2 + min_possible_reward) * global_step / 150
+            if max_possible_reward < 1.0:
+                max_possible_reward = 1.0
+            if min_possible_reward > -1.0:
+                min_possible_reward = -1.0
+
+        rewards = []
+        responses = completions
+
+        for response, ans in zip(responses, solution):
+            reward = min_possible_reward
+            if '<response>' in ans and '<tool_call>' not in ans:
+                pattern = r'^<think>.*?</think>\n<response>.*?</response>$'
+                if re.search(pattern, response,
+                             re.DOTALL) and response.count('<response>') == 1 and response.count('</response>') == 1:
+                    reward = max_possible_reward
+            elif '<response>' not in ans and '<tool_call>' in ans:
+                pattern = r'^<think>.*?</think>\n<tool_call>\n.*?\n</tool_call>$'
+                if re.search(pattern, response,
+                             re.DOTALL) and response.count('<tool_call>') == 1 and response.count('</tool_call>') == 1:
+                    reward = max_possible_reward
+            elif '<response>' in ans and '<tool_call>' in ans:
+                pattern = r'^<think>.*?</think>\n<tool_call>\n.*?\n</tool_call>\n<response>.*?</response>$'
+                if (re.search(pattern, response, re.DOTALL) and response.count('<tool_call>') == 1
+                        and response.count('</tool_call>') == 1 and response.count('<response>') == 1
+                        and response.count('</response>') == 1):
+                    reward = max_possible_reward
+            else:
+                pattern = r'^<think>.*?</think>$'
+                if re.search(pattern, response, re.DOTALL):
+                    reward = max_possible_reward
+
+            rewards.append(reward)
+
+        return rewards
+
+
+class ToolUseLengthReward(ORM):
+
+    def __init__(self):
+        self.length_max_possible = 1.0
+        self.length_min_possible = 0.0
+
+    # customized reward functions: length
+    def __call__(self, completions, solution, global_step, **kwargs):
+        max_possible_reward = self.length_max_possible
+        min_possible_reward = self.length_min_possible
+        # SCHEDULELENGTH: enable Dynamic Length Reward
+        if os.getenv('SCHEDULELENGTH', 0) == '1':
+            max_reward_len = (640 - 384) * global_step / 105 + 384
+        else:
+            max_reward_len = 512
+        """Reward function that gives higher scores to longer completions."""
+        responses = completions
+        rewards = []
+
+        for response, ans in zip(responses, solution):
+            if '<think>' not in response or '</think>' not in response:
+                rewards.append(min_possible_reward)
+                continue
+            think_responses = response.split('<think>')[-1].split('</think>')[0].strip()
+            reward = round(len(think_responses.split()) / max_reward_len, 2)
+            if reward > 1.0:
+                reward = 1.0
+
+            final_reward = reward * (max_possible_reward - min_possible_reward) + min_possible_reward
+            rewards.append(final_reward)
+
+        return rewards
+
+
+class ToolUseCorrectnessReward(ORM):
+
+    def __init__(self):
+        if str(os.getenv('CORRECTMAX1', 0)) == '1':
+            self.tool_max_possible = 1.0
+            self.tool_min_possible = -1.0
+        else:
+            self.tool_max_possible = 3.0
+            self.tool_min_possible = -3.0
+
+    def match_score(self, list1, list2):
+        if list1 == list2:
+            return 1.0
+
+        if os.getenv('REFINEDREWARD', 0) == '1':
+            if list1 != list2:
+                return 0.0
+
+        if not list1 or not list2:
+            return 0.0
+
+        count1 = Counter(list1)  # Frequency count for list1
+        count2 = Counter(list2)  # Frequency count for list2
+
+        intersection = sum(min(count1[k], count2[k]) for k in count1.keys() & count2.keys())
+        max_possible = len(list1) + len(list2) - intersection
+
+        return intersection / max_possible if max_possible > 0 else 0.0
+
+    def compute_tool_call_reward(self, gt_tools, pd_tools, max_possible_reward, min_possible_reward):
+        if gt_tools == pd_tools:
+            return max_possible_reward
+
+        if os.getenv('COARSEREWARD', 0) == '1':
+            if gt_tools != pd_tools:
+                return min_possible_reward
+
+        gt_names = [tool['name'] for tool in gt_tools]
+        pd_names = [tool['name'] for tool in pd_tools]
+        score = self.match_score(list(gt_names), list(pd_names))
+
+        local_max_possible = 1.0
+        used_pd_indices = set()  # Keep track of matched pd_tools
+
+        for gt_tool in gt_tools:
+            gt_name = gt_tool['name']
+            gt_params = gt_tool['parameters']
+
+            if str(os.getenv('INTERMEDIATEREWARD', 0)) == '1':
+                local_max_possible += 1.0
+            else:
+                local_max_possible += 1.0 + len(gt_params)
+
+            best_match = None
+            best_match_score = 0.0
+            best_match_index = -1
+
+            # Find the best matching unused pd_tool
+            for i, pd_tool in enumerate(pd_tools):
+                if i in used_pd_indices or pd_tool['name'] != gt_name:
+                    continue
+
+                if str(os.getenv('INTERMEDIATEREWARD', 0)) == '1':
+                    if gt_tool == pd_tool:
+                        best_match = pd_tool
+                        best_match_index = i
+                        best_match_score = 1.0
+                        break
+                    else:
+                        continue
+
+                pd_params = pd_tool['parameters']
+                param_score = self.match_score(list(gt_params.keys()), list(pd_params.keys()))
+
+                # Calculate correctness score for parameter values
+                correctness_score = sum(1.0 for k, v in gt_params.items() if k in pd_params and pd_params[k] == v)
+
+                total_score = param_score + correctness_score
+
+                if total_score > best_match_score:
+                    best_match_score = total_score
+                    best_match = pd_tool
+                    best_match_index = i
+
+            if best_match:
+                used_pd_indices.add(best_match_index)
+                score += best_match_score
+
+        return (max_possible_reward - min_possible_reward) * score / local_max_possible + min_possible_reward
+
+    # custoimzed reward functions: tool call correctness
+    def __call__(self, completions, solution, global_step, **kwargs):
+        max_possible_reward = self.tool_max_possible
+        min_possible_reward = self.tool_min_possible
+        # two stage (Coarse) Setting, divide training into two phases.
+        if str(os.getenv('MAX1STEP30MAX3', 0)) == '1':
+            if global_step < 30:
+                max_possible_reward = max_possible_reward / 3
+                min_possible_reward = min_possible_reward / 3
+            else:
+                max_possible_reward = max_possible_reward
+                min_possible_reward = min_possible_reward
+        # apply continuous interpolation between the two reward scales throughout training.
+        if str(os.getenv('SCHEDULEREWARD', 0)) == '1':
+            max_possible_reward = (max_possible_reward - 2) * global_step / 150 + 2
+            min_possible_reward = (min_possible_reward + 2) * global_step / 150 - 2
+            if max_possible_reward > 3.0:
+                max_possible_reward = 3.0
+            if min_possible_reward < -3.0:
+                min_possible_reward = -3.0
+
+        responses = completions
+        rewards = []
+
+        for response, ans in zip(responses, solution):
+            reward = 0.0
+
+            if '<tool_call>' not in ans:
+                # if "<tool_call>" not in response and "</tool_call>" not in response:
+                #     reward = max_possible_reward
+                # else:
+                #     reward = min_possible_reward
+                rewards.append(reward)
+                continue
+
+            gt_tool_call = ans.split('<tool_call>')[1].split('</tool_call>')[0].strip()
+            gt_tools = gt_tool_call.split('\n')
+            gt_tools = [json.loads(tool) for tool in gt_tools]  # each diction contains "name" and "parameter"
+
+            try:
+                # if the format is not correct, directly give the lowest possible score
+                assert '<tool_call>' in response
+                assert '</tool_call>' in response
+                pd_tools = response.split('<tool_call>')[1].split('</tool_call>')[0].strip().split('\n')
+                pd_tools = [json.loads(tool) for tool in pd_tools]
+                reward = self.compute_tool_call_reward(gt_tools, pd_tools, max_possible_reward,
+                                                       min_possible_reward)  # top reward is 2
+            except (ValueError, IndexError, AssertionError):
+                reward = min_possible_reward
+
+            rewards.append(reward)
+
+        return rewards
+
+
 orms['external_math_acc'] = MathAccuracy
 orms['external_math_format'] = MathFormat
 orms['external_countdown'] = CountdownORM
@@ -454,9 +700,28 @@ orms['external_r1v_acc'] = MultiModalAccuracyORM
 orms['external_code_reward'] = CodeReward
 orms['external_code_format'] = CodeFormat
 orms['external_code_reward_by_judge0'] = CodeRewardByJudge0
+orms['external_tooluse_format_reward'] = ToolUseFormatReward
+orms['external_tooluse_length_reward'] = ToolUseLengthReward
+orms['external_tooluse_correct_reward'] = ToolUseCorrectnessReward
+"""
+TO CUSTOMIZE REWARD MODEL:
+    Step 1: Define a Reward Class
+        Implement your custom reward calculation logic within the __call__ method.
+        The method accepts the messages generated by the model during interactions
+        and dataset columns as inputs parameters.
+
+    Step 2: Add your reward model plugin to the rm_plugins registry:
+        rm_plugins['my_rm_plugin'] = MyRMPlugin
+
+    Step 3: Configure the Arguments
+        Run the script with:
+        --plugin /path/to/plugin.py \
+        --reward_model_plugin my_rm_plugin
+
+For GenRM you can refer to swift/llm/plugin/rm_plugin/GenRMPlugin
+"""
 
 
-# For genrm you can refer to swift/llm/plugin/rm_plugin/GenRMPlugin
 class CustomizedRMPlugin:
     """
     Customized Reward Model Plugin, same to DefaultRMPlugin
@@ -595,3 +860,30 @@ class QwenLongPlugin(DefaultRMPlugin):
 
 rm_plugins['my_rmplugin'] = CustomizedRMPlugin
 rm_plugins['qwenlong'] = QwenLongPlugin
+"""
+TO CUSTOMIZE MULTITURN SCHEDULER:
+    Step 1: Define a Scheduler Class
+        Implement your custom scheduler with the following methods:
+            - step() (Required): Constructs the next round of the infer request.
+            - check_finished() (Optional): Determines whether the current round has finished,
+                which defaults to ending when the inference result is truncated (over length) or
+                when the maximum number of rounds is reached.
+        Both methods accept
+            - the last turn's InferRequest/result
+            The current turn count
+
+    Step 2: Add your scheduler to the multi_turns registry:
+        multi_turns['my_scheduler'] = MyScheduler
+
+    Step 3: Configure the Arguments
+        Run the script with:
+        --plugin /path/to/plugin.py \
+        --multi_turn_scheduler my_scheduler
+"""
+
+
+class ReToolScheduler(MultiTurnScheduler):
+    pass
+
+
+multi_turns['retool'] = ReToolScheduler
