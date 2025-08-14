@@ -13,7 +13,9 @@ class LLMModelType:
     qwq_preview = 'qwq_preview'
     qwq = 'qwq'
     qwen3 = 'qwen3'
+    qwen3_thinking = 'qwen3_thinking'
     qwen3_moe = 'qwen3_moe'
+    qwen3_moe_thinking = 'qwen3_moe_thinking'
     qwen3_emb = 'qwen3_emb'
     qwen3_reranker = 'qwen3_reranker'
 
@@ -32,6 +34,7 @@ class LLMModelType:
     yi = 'yi'
     yi_coder = 'yi_coder'
     sus = 'sus'
+    gpt_oss = 'gpt_oss'
 
     codefuse_codellama = 'codefuse_codellama'
     mengzi3 = 'mengzi3'
@@ -43,6 +46,7 @@ class LLMModelType:
     chatglm3 = 'chatglm3'
     glm4 = 'glm4'
     glm4_0414 = 'glm4_0414'
+    glm4_5 = 'glm4_5'
     glm4_z1_rumination = 'glm4_z1_rumination'
 
     glm_edge = 'glm_edge'
@@ -79,6 +83,7 @@ class LLMModelType:
     telechat2 = 'telechat2'
 
     mistral = 'mistral'
+    devstral = 'devstral'
     zephyr = 'zephyr'
     mixtral = 'mixtral'
     mistral_nemo = 'mistral_nemo'
@@ -119,7 +124,9 @@ class LLMModelType:
     mimo = 'mimo'
     mimo_rl = 'mimo_rl'
     dots1 = 'dots1'
+    hunyuan_moe = 'hunyuan_moe'
     hunyuan = 'hunyuan'
+    ernie = 'ernie'
 
 
 class BertModelType:
@@ -151,8 +158,11 @@ class MLLMModelType:
     ovis1_6_llama3 = 'ovis1_6_llama3'
     ovis2 = 'ovis2'
     mimo_vl = 'mimo_vl'
+    midashenglm = 'midashenglm'
 
     glm4v = 'glm4v'
+    glm4_1v = 'glm4_1v'
+    glm4_5v = 'glm4_5v'
     glm_edge_v = 'glm_edge_v'
     cogvlm = 'cogvlm'
     cogagent_vqa = 'cogagent_vqa'
@@ -203,6 +213,7 @@ class MLLMModelType:
     minicpmv2_5 = 'minicpmv2_5'
     minicpmv2_6 = 'minicpmv2_6'
     minicpmo2_6 = 'minicpmo2_6'
+    minicpmv4 = 'minicpmv4'
 
     minimax_vl = 'minimax_vl'
 
@@ -218,6 +229,8 @@ class MLLMModelType:
     got_ocr2_hf = 'got_ocr2_hf'
     step_audio = 'step_audio'
     kimi_vl = 'kimi_vl'
+    keye_vl = 'keye_vl'
+    dots_ocr = 'dots_ocr'
 
     phi3_vision = 'phi3_vision'
     phi4_multimodal = 'phi4_multimodal'
@@ -230,6 +243,7 @@ class MLLMModelType:
     megrez_omni = 'megrez_omni'
     valley = 'valley'
     gemma3_vision = 'gemma3_vision'
+    gemma3n = 'gemma3n'
     mistral_2503 = 'mistral_2503'
 
 

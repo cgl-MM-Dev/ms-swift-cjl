@@ -7,12 +7,13 @@ from typing import Any, Optional, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import PreTrainedModel
 from trl import GKDTrainer as HFGKDTrainer
 from trl import SFTTrainer as HFSFTTrainer
 from trl.models.utils import prepare_deepspeed
 
-from swift.utils import empty_cache, unwrap_model_for_generation
+from swift.utils import unwrap_model_for_generation
 from ..mixin import SwiftMixin
 from .rlhf_mixin import RLHFTrainerMixin
 
@@ -47,7 +48,7 @@ class GKDTrainer(RLHFTrainerMixin, SwiftMixin, HFGKDTrainer):
 
     # Code borrowed from huggingface/trl
     def generate_on_policy_outputs(self, model, inputs, generation_config, pad_token_id=None):
-        assert not self.template._packing, 'generate not support padding_free/packing.'
+        assert not self.template.padding_free, 'generate not support padding_free/packing.'
         # Generate output with respect to the prompt only
         model_inputs = {k: v for k, v in inputs.items() if not k.startswith('prompt') and k != 'labels'}
         model_inputs['input_ids'] = inputs['prompts']
@@ -87,23 +88,31 @@ class GKDTrainer(RLHFTrainerMixin, SwiftMixin, HFGKDTrainer):
         # If generate is used, then use_logits_to_keep must be set to False.
         use_logits_to_keep = self.get_use_logits_to_keep(True)
         if use_logits_to_keep:
-            inputs['labels'], logits_to_keep = self.get_logits_to_keep(inputs['labels'])
-            if logits_to_keep is not None:
-                model_inputs['logits_to_keep'] = logits_to_keep
+            self.prepare_logits_to_keep(inputs)
+            model_inputs['logits_to_keep'] = inputs['logits_to_keep']
         if self.args.sft_alpha > 0:
             model_inputs['labels'] = inputs['labels']
         # compute student output
-        with self.template.compute_loss_context(self.model, model_inputs):
-            outputs_student = model(**model_inputs)
+        outputs_student = model(**model_inputs)
 
         model_inputs.pop('labels', None)
-        with torch.no_grad(), self.template.compute_loss_context(self.model, model_inputs):
+        with torch.no_grad():
             outputs_teacher = self.teacher_model(**model_inputs)
 
         shifted_labels = torch.roll(inputs['labels'], shifts=-1, dims=1)
         mask = shifted_labels != -100
         shifted_student_logits = outputs_student.logits[mask][None]
         shifted_teacher_logits = outputs_teacher.logits[mask][None]
+
+        # Fix the vocab_size mismatch between Qwen2.5-VL-3B-Instruct and Qwen2.5-VL-7B-Instruct.
+        stu_dim = shifted_student_logits.shape[-1]
+        tea_dim = shifted_teacher_logits.shape[-1]
+        if stu_dim < tea_dim:
+            shifted_student_logits = F.pad(shifted_student_logits, (0, tea_dim - stu_dim), 'constant', 0)
+            shifted_student_logits[..., stu_dim:] = shifted_teacher_logits[..., stu_dim:]
+        elif stu_dim > tea_dim:
+            shifted_teacher_logits = F.pad(shifted_teacher_logits, (0, stu_dim - tea_dim), 'constant', 0)
+            shifted_teacher_logits[..., tea_dim:] = shifted_student_logits[..., tea_dim:]
 
         # compute loss
         loss = self.generalized_jsd_loss(
@@ -134,8 +143,10 @@ class GKDTrainer(RLHFTrainerMixin, SwiftMixin, HFGKDTrainer):
             with unwrap_model_for_generation(
                     model, self.accelerator,
                     gather_deepspeed3_params=self.args.ds3_gather_for_generation) as unwrapped_model:
+                unwrapped_model.eval()  # Remove the gradient_checkpointing warning.
                 new_input_ids, new_attention_mask, new_labels = self.generate_on_policy_outputs(
                     unwrapped_model, inputs, self.generation_config, self.processing_class.pad_token_id)
+                unwrapped_model.train()
             inputs['input_ids'] = new_input_ids
             inputs['attention_mask'] = new_attention_mask
             inputs['labels'] = new_labels
@@ -149,5 +160,10 @@ class GKDTrainer(RLHFTrainerMixin, SwiftMixin, HFGKDTrainer):
             inputs['attention_mask'] = new_attention_mask
             inputs['labels'] = new_labels
 
-        loss = HFSFTTrainer.training_step(self, model, inputs, num_items_in_batch)
+        with self.template.forward_context(self.model, inputs):
+            loss = HFSFTTrainer.training_step(self, model, inputs, num_items_in_batch)
         return loss
+
+    def prediction_step(self, model, inputs, *args, **kwargs):
+        with self.template.forward_context(self.model, inputs):
+            return super().prediction_step(model, inputs, *args, **kwargs)

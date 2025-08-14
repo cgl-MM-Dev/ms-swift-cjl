@@ -291,7 +291,7 @@ class BaseUI:
                     default_dict[f.name] = ' '.join(default_dict[f.name])
                 except TypeError:
                     default_dict[f.name] = None
-            if not default_dict[f.name]:
+            if not default_dict[f.name] and default_dict[f.name] not in (0, False):
                 default_dict[f.name] = None
         return default_dict
 
@@ -398,7 +398,7 @@ class BaseUI:
     @classmethod
     def update_all_settings(cls, model, train_record, base_tab):
         if not train_record:
-            return [gr.update()] * len(cls.elements())
+            return [gr.update()] * len(cls.valid_elements())
         cache = cls.load_cache(model, train_record)
         updates = []
         for key, value in base_tab.valid_elements().items():
@@ -407,3 +407,12 @@ class BaseUI:
             else:
                 updates.append(gr.update())
         return updates
+
+    @classmethod
+    def update_ddp_num(cls, gpu_ids, use_ddp):
+        if use_ddp:
+            if 'cpu' in gpu_ids:
+                return None
+            else:
+                return len(gpu_ids)
+        return 1

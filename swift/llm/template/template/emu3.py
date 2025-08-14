@@ -165,6 +165,7 @@ class Emu3ChatTemplate(Template):
         images = inputs.images
         input_ids = encoded['input_ids']
         labels = encoded['labels']
+        loss_scale = encoded.get('loss_scale', None)
         image_tokens = self.processor.tokenize_image(images)
         image_prompts = []
         idx_list = findall(input_ids, self.tokenizer.encode(self.image_placeholder))
@@ -178,8 +179,9 @@ class Emu3ChatTemplate(Template):
             image_prompts.append(self.tokenizer.encode(image_prompt))
 
         # Insert image tokens into input_ids
-        input_ids, labels = self._extend_tokens(input_ids, labels, idx_list, lambda i: image_prompts[i])
-        return {'input_ids': input_ids, 'labels': labels}
+        input_ids, labels, loss_scale = self._extend_tokens(input_ids, labels, loss_scale, idx_list,
+                                                            lambda i: image_prompts[i])
+        return {'input_ids': input_ids, 'labels': labels, 'loss_scale': loss_scale}
 
 
 register_template(

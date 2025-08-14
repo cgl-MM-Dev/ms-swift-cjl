@@ -53,11 +53,13 @@ class GRPOConfig(GRPOArgumentsMixin, SwiftArgumentsMixin, HfGRPOConfig):
     stop_words: List[str] = field(default_factory=list)
 
     def __post_init__(self):
-        from swift.llm.argument.base_args.model_args import ModelArguments
-        super().__post_init__()
+        GRPOArgumentsMixin.__post_init__(self)
+        SwiftArgumentsMixin.__post_init__(self)
+        if self.vllm_reasoning_parser is not None:
+            raise ValueError('vllm_reasoning_parser is not supported for GRPO Training, please unset it.')
+
         if self.cosine_max_len is None:
             self.cosine_max_len = self.max_completion_length
-        self.vllm_limit_mm_per_prompt = ModelArguments.parse_to_dict(self.vllm_limit_mm_per_prompt)
 
         if self.deepspeed and 'zero_optimization' in self.deepspeed and self.deepspeed['zero_optimization'][
                 'stage'] == 3:
@@ -80,7 +82,7 @@ class GRPOConfig(GRPOArgumentsMixin, SwiftArgumentsMixin, HfGRPOConfig):
         # check num_generations for trl < 0.18
         num_processes = self.world_size
 
-        if self.generation_batch_size % self.per_device_train_batch_size * num_processes != 0:
+        if self.generation_batch_size % (self.per_device_train_batch_size * num_processes) != 0:
             raise ValueError(
                 f'generation_batch_size ({self.generation_batch_size}) must be divisible by the global batch size '
                 f'({self.per_device_train_batch_size * num_processes}).')

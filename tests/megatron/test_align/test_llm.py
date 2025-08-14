@@ -1,13 +1,11 @@
 import os
 
-import torch
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3,4,5,6,7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 
 
 def _test_model(model_id, **kwargs):
     from swift.llm import export_main, ExportArguments
-    if model_id.endswith('mcore'):
+    if model_id.endswith('mcore') or 'megatron_output' in model_id and 'hf' not in model_id:
         export_main(
             ExportArguments(
                 mcore_model=model_id,
@@ -120,6 +118,15 @@ def test_hunyuan():
     _test_model('Tencent-Hunyuan/Hunyuan-A13B-Instruct')
 
 
+def test_ernie():
+    # _test_model('PaddlePaddle/ERNIE-4.5-0.3B-PT')
+    _test_model('PaddlePaddle/ERNIE-4.5-21B-A3B-PT')
+
+
+def test_glm4_5():
+    _test_model('ZhipuAI/GLM-4.5-Air')
+
+
 if __name__ == '__main__':
     # test_qwen2()
     # test_llama2()
@@ -142,4 +149,6 @@ if __name__ == '__main__':
     # test_deepseek_moe()
     # test_dots()
     # test_kimi_dev()
-    test_hunyuan()
+    # test_hunyuan()
+    # test_ernie()
+    test_glm4_5()

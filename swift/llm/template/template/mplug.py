@@ -91,6 +91,7 @@ class mPlugOwl3Template(Template):
         cut_enable = not videos
         input_ids = encoded['input_ids']
         labels = encoded['labels']
+        loss_scale = encoded.get('loss_scale', None)
         idx_list = findall(input_ids, -100)
         processor = self.processor
         encoded = {}
@@ -107,7 +108,9 @@ class mPlugOwl3Template(Template):
                     token_list = image_token_list
                 return token_list
 
-            input_ids, labels = self._extend_tokens(input_ids, labels, idx_list, _get_new_tokens)
+            input_ids, labels, loss_scale = self._extend_tokens(input_ids, labels, loss_scale, idx_list,
+                                                                _get_new_tokens)
+
             image_token_idx = torch.tensor(findall(input_ids, image_token_list))
             if self.version == '241101':
                 media_offset = image_token_idx
@@ -121,6 +124,7 @@ class mPlugOwl3Template(Template):
             })
         encoded['input_ids'] = input_ids
         encoded['labels'] = labels
+        encoded['loss_scale'] = loss_scale
         return encoded
 
     def _post_encode(self, model: nn.Module, inputs: Dict[str, Any]) -> Dict[str, Any]:

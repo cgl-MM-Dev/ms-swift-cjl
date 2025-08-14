@@ -15,6 +15,7 @@ from ..utils import Context, Prompt, findall
 from ..vision_utils import load_video_minicpmv_mplug_owl3
 from .llama import Llama3TemplateMeta
 from .qwen import Qwen2_5TemplateMeta, QwenTemplateMeta
+from .utils import ChatmlTemplateMeta
 
 
 @dataclass
@@ -179,6 +180,7 @@ class MiniCPMV2_6Template(MiniCPMVTemplate):
             use_image_id = False
         input_ids = encoded['input_ids']
         labels = encoded['labels']
+        loss_scale = encoded.get('loss_scale', None)
         idx_list = findall(input_ids, -100)
 
         image_processor = self.processor.image_processor
@@ -191,7 +193,8 @@ class MiniCPMV2_6Template(MiniCPMVTemplate):
             placeholder += '\n'
             return self.processor.encode(placeholder, add_special_tokens=False)
 
-        input_ids, labels = self._extend_tokens(input_ids, labels, idx_list, _get_new_tokens)
+        input_ids, labels, loss_scale = self._extend_tokens(input_ids, labels, loss_scale, idx_list, _get_new_tokens)
+
         if inputs.images:
             input_tensor_ids = torch.tensor(input_ids)
             unk_token = self.processor.encode('<unk>', add_special_tokens=False)[0]
@@ -211,6 +214,7 @@ class MiniCPMV2_6Template(MiniCPMVTemplate):
         encoded = {
             'input_ids': input_ids,
             'labels': labels,
+            'loss_scale': loss_scale,
             'image_bound': image_bound,
             'pixel_values': image_inputs['pixel_values'],
             'tgt_sizes': image_inputs['tgt_sizes']
@@ -225,5 +229,10 @@ register_template(QwenTemplateMeta(
 
 register_template(Qwen2_5TemplateMeta(
     MLLMTemplateType.minicpmo2_6,
+    template_cls=MiniCPMV2_6Template,
+))
+
+register_template(ChatmlTemplateMeta(
+    MLLMTemplateType.minicpmv4,
     template_cls=MiniCPMV2_6Template,
 ))

@@ -54,6 +54,9 @@ class PPOTrainer(SwiftMixin, HFPPOTrainer):
         unwrap_model = self.accelerator.unwrap_model(self.model)
         patch_getattr(unwrap_model.__class__, 'policy')
 
+    def create_loss_and_metric(self, args):
+        return {}
+
     def train(self, *args, **kwargs):
         # remove args that are not needed for the HFPPOTrainer
         super().train()
@@ -68,7 +71,10 @@ class PPOTrainer(SwiftMixin, HFPPOTrainer):
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         # https://github.com/huggingface/trl/issues/2122
         backup_model = self.model
-        self.model = self.model.policy  # save only the policy
+
+        # Unwrap model if needed to access the policy
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        self.model = unwrapped_model.policy  # save only the policy
 
         Trainer.save_model(self, output_dir, _internal_call)
 
@@ -89,3 +95,8 @@ class PPOTrainer(SwiftMixin, HFPPOTrainer):
         # for model in models:
         #     SwiftMixin._prepare_gradient_checkpointing(self, model)
         pass
+
+    def generate_completions(self, *args, **kwargs):
+        if self.eval_dataset is None:
+            return
+        return super().generate_completions(*args, **kwargs)

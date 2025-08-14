@@ -37,6 +37,7 @@ class KimiVLTemplate(Template):
         encoded = super()._encode(inputs)
         input_ids = encoded['input_ids']
         labels = encoded['labels']
+        loss_scale = encoded.get('loss_scale', None)
         media_token = self._tokenize('<|media_pad|>')[0]
         idx_list = findall(input_ids, media_token)
         if inputs.images:
@@ -49,7 +50,10 @@ class KimiVLTemplate(Template):
                 token_len = (image_grid_hws[i].prod() // merge_length)
                 return [media_token] * token_len
 
-            input_ids, labels = self._extend_tokens(input_ids, labels, idx_list, _get_new_tokens)
+            input_ids, labels, loss_scale = self._extend_tokens(input_ids, labels, loss_scale, idx_list,
+                                                                _get_new_tokens)
+
+            encoded['loss_scale'] = loss_scale
             encoded['input_ids'] = input_ids
             encoded['labels'] = labels
             encoded.update(image_inputs)

@@ -12,6 +12,9 @@ import torch
 from swift.llm import PtEngine, RequestConfig, Template, to_device
 from swift.llm.infer.protocol import ChatCompletionResponse
 from swift.plugin import ORM, orms, rm_plugins
+# register context manager(used in gym training)
+from swift.plugin.context_manager import ContextManager, context_managers
+from swift.plugin.env import Env, envs
 from swift.plugin.multi_turn import MultiTurnScheduler, multi_turns
 from swift.plugin.rm_plugin import DefaultRMPlugin
 from swift.utils import get_logger
@@ -28,7 +31,7 @@ TO CUSTOMIZE REWARD FUNCTION:
 
     Step 3: Configure the Arguments
         Run the script with:
-        --plugin /path/to/plugin.py \
+        --external_plugins /path/to/plugin.py \
         --reward_funcs my_reward_function
 """
 
@@ -462,7 +465,9 @@ class ToolUseFormatReward(ORM):
         self.format_max_possible = 1.0
         self.format_min_possible = 0.0
 
-    def __call__(self, completions, solution, global_step, **kwargs) -> List[float]:
+    def __call__(self, completions, solution, **kwargs) -> List[float]:
+        trainer_state = kwargs.get('trainer_state')
+        global_step = trainer_state.global_step
         max_possible_reward = self.format_max_possible
         min_possible_reward = self.format_min_possible
         # Two stage (Coarse) Setting, divide training into two phases. Format Reward in [0,0.5] if step < 30 else [0,1]
@@ -489,17 +494,17 @@ class ToolUseFormatReward(ORM):
         for response, ans in zip(responses, solution):
             reward = min_possible_reward
             if '<response>' in ans and '<tool_call>' not in ans:
-                pattern = r'^<think>.*?</think>\n<response>.*?</response>$'
+                pattern = r'^<think>.*?</think>\s*<response>.*?</response>$'
                 if re.search(pattern, response,
                              re.DOTALL) and response.count('<response>') == 1 and response.count('</response>') == 1:
                     reward = max_possible_reward
             elif '<response>' not in ans and '<tool_call>' in ans:
-                pattern = r'^<think>.*?</think>\n<tool_call>\n.*?\n</tool_call>$'
+                pattern = r'^<think>.*?</think>\s*<tool_call>.*?</tool_call>$'
                 if re.search(pattern, response,
                              re.DOTALL) and response.count('<tool_call>') == 1 and response.count('</tool_call>') == 1:
                     reward = max_possible_reward
             elif '<response>' in ans and '<tool_call>' in ans:
-                pattern = r'^<think>.*?</think>\n<tool_call>\n.*?\n</tool_call>\n<response>.*?</response>$'
+                pattern = r'^<think>.*?</think>\s*<tool_call>.*?</tool_call>\s*<response>.*?</response>$'
                 if (re.search(pattern, response, re.DOTALL) and response.count('<tool_call>') == 1
                         and response.count('</tool_call>') == 1 and response.count('<response>') == 1
                         and response.count('</response>') == 1):
@@ -521,9 +526,11 @@ class ToolUseLengthReward(ORM):
         self.length_min_possible = 0.0
 
     # customized reward functions: length
-    def __call__(self, completions, solution, global_step, **kwargs):
+    def __call__(self, completions, solution, **kwargs):
         max_possible_reward = self.length_max_possible
         min_possible_reward = self.length_min_possible
+        trainer_state = kwargs.get('trainer_state')
+        global_step = trainer_state.global_step
         # SCHEDULELENGTH: enable Dynamic Length Reward
         if os.getenv('SCHEDULELENGTH', 0) == '1':
             max_reward_len = (640 - 384) * global_step / 105 + 384
@@ -639,7 +646,9 @@ class ToolUseCorrectnessReward(ORM):
         return (max_possible_reward - min_possible_reward) * score / local_max_possible + min_possible_reward
 
     # custoimzed reward functions: tool call correctness
-    def __call__(self, completions, solution, global_step, **kwargs):
+    def __call__(self, completions, solution, **kwargs):
+        trainer_state = kwargs.get('trainer_state')
+        global_step = trainer_state.global_step
         max_possible_reward = self.tool_max_possible
         min_possible_reward = self.tool_min_possible
         # two stage (Coarse) Setting, divide training into two phases.
@@ -715,7 +724,7 @@ TO CUSTOMIZE REWARD MODEL:
 
     Step 3: Configure the Arguments
         Run the script with:
-        --plugin /path/to/plugin.py \
+        --external_plugins /path/to/plugin.py \
         --reward_model_plugin my_rm_plugin
 
 For GenRM you can refer to swift/llm/plugin/rm_plugin/GenRMPlugin
@@ -737,7 +746,6 @@ class CustomizedRMPlugin:
     def __call__(self, inputs):
         batched_inputs = [self.template.encode(deepcopy(infer_request)) for infer_request in inputs]
         reward_inputs = to_device(self.template.data_collator(batched_inputs), self.model.device)
-        reward_inputs.pop('labels')
 
         with torch.inference_mode():
             return self.model(**reward_inputs).logits[:, 0]
@@ -877,7 +885,7 @@ TO CUSTOMIZE MULTITURN SCHEDULER:
 
     Step 3: Configure the Arguments
         Run the script with:
-        --plugin /path/to/plugin.py \
+        --external_plugins /path/to/plugin.py \
         --multi_turn_scheduler my_scheduler
 """
 
@@ -887,3 +895,18 @@ class ReToolScheduler(MultiTurnScheduler):
 
 
 multi_turns['retool'] = ReToolScheduler
+
+
+# register GYM env
+class CustomEnv(Env):
+    pass
+
+
+envs['custom_env'] = CustomEnv
+
+
+class CustomCtxManager(ContextManager):
+    pass
+
+
+context_managers['custom_ctx'] = CustomCtxManager
